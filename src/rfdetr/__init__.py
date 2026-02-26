@@ -15,6 +15,8 @@ from rfdetr.detr import (
     RFDETRLargeDeprecated,
     RFDETRMedium,
     RFDETRNano,
+    RFDETRPoseLarge,
+    RFDETRPoseSmall,
     RFDETRSeg2XLarge,
     RFDETRSegLarge,
     RFDETRSegMedium,
@@ -36,6 +38,8 @@ __all__ = [
     "RFDETRSegLarge",
     "RFDETRSegXLarge",
     "RFDETRSeg2XLarge",
+    "RFDETRPoseSmall",
+    "RFDETRPoseLarge",
 ]
 
 

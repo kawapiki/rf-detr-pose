@@ -105,6 +105,7 @@ def test_train_one_epoch_progress_bar_creation_and_metrics(
     monkeypatch.setattr(engine, "tqdm", fake_tqdm)
     monkeypatch.setattr(engine, "GradScaler", lambda *_args, **_kwargs: scaler)
     monkeypatch.setattr(engine, "autocast", lambda **_kwargs: nullcontext())
+    monkeypatch.setattr(engine, "get_autocast_args", lambda _args: {"enabled": False})
     monkeypatch.setattr(engine.utils, "is_main_process", lambda: is_main_process)
 
     model = _DummyTrainModel()
@@ -167,6 +168,7 @@ def test_evaluate_progress_bar_creation_and_metrics(monkeypatch) -> None:
 
     monkeypatch.setattr(engine, "tqdm", fake_tqdm)
     monkeypatch.setattr(engine, "autocast", lambda **_kwargs: nullcontext())
+    monkeypatch.setattr(engine, "get_autocast_args", lambda _args: {"enabled": False})
     monkeypatch.setattr(engine.utils, "is_main_process", lambda: True)
     monkeypatch.setattr(engine, "CocoEvaluator", lambda *_args, **_kwargs: coco_evaluator)
     monkeypatch.setattr(engine, "coco_extended_metrics", lambda _coco: {"class_map": [], "map": 0.0})

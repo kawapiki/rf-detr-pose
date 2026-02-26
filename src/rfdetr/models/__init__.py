@@ -13,4 +13,5 @@
 # Copyright (c) Facebook, Inc. and its affiliates. All Rights Reserved.
 # ------------------------------------------------------------------------
 
+from rfdetr.models.keypoint_head import KeypointHead
 from rfdetr.models.lwdetr import PostProcess, build_criterion_and_postprocessors, build_model

@@ -31,11 +31,14 @@ except:
 from rfdetr.assets.model_weights import download_pretrain_weights
 from rfdetr.config import (
     ModelConfig,
+    PoseTrainConfig,
     RFDETRBaseConfig,
     RFDETRLargeConfig,
     RFDETRLargeDeprecatedConfig,
     RFDETRMediumConfig,
     RFDETRNanoConfig,
+    RFDETRPoseLargeConfig,
+    RFDETRPoseSmallConfig,
     RFDETRSeg2XLargeConfig,
     RFDETRSegLargeConfig,
     RFDETRSegMediumConfig,
@@ -189,8 +192,12 @@ class RFDETR:
             num_classes = len(class_names)
             self.model.class_names = class_names
         elif config.dataset_file == "coco":
-            class_names = COCO_CLASSES
-            num_classes = 90
+            if getattr(config, "keypoint_head", False):
+                class_names = ["person"]
+                num_classes = 1
+            else:
+                class_names = COCO_CLASSES
+                num_classes = 90
         else:
             raise ValueError(f"Invalid dataset file: {config.dataset_file}")
 
@@ -221,6 +228,12 @@ class RFDETR:
             raise ValueError(
                 "Segmentation training requires consistent mask shapes across a batch. "
                 "Set `square_resize_div_64=True` (the default for segmentation configs) or omit the argument."
+            )
+
+        if all_kwargs.get("keypoint_head") and not all_kwargs.get("square_resize_div_64", False):
+            raise ValueError(
+                "Pose training requires consistent input shapes across a batch. "
+                "Set `square_resize_div_64=True` (the default for pose configs) or omit the argument."
             )
 
         metrics_plot_sink = MetricsPlotSink(output_dir=config.output_dir)
@@ -403,7 +416,10 @@ class RFDETR:
                     "pred_boxes": predictions[0],
                 }
                 if len(predictions) == 3:
-                    return_predictions["pred_masks"] = predictions[2]
+                    if self.model_config.keypoint_head:
+                        return_predictions["pred_keypoints"] = predictions[2]
+                    else:
+                        return_predictions["pred_masks"] = predictions[2]
                 predictions = return_predictions
             target_sizes = torch.tensor(orig_sizes, device=self.model.device)
             results = self.model.postprocess(predictions, target_sizes=target_sizes)
@@ -428,6 +444,14 @@ class RFDETR:
                     confidence=scores.float().cpu().numpy(),
                     class_id=labels.cpu().numpy(),
                     mask=masks.squeeze(1).cpu().numpy(),
+                )
+            elif "keypoints" in result:
+                keypoints = result["keypoints"][keep]
+                detections = sv.Detections(
+                    xyxy=boxes.float().cpu().numpy(),
+                    confidence=scores.float().cpu().numpy(),
+                    class_id=labels.cpu().numpy(),
+                    data={"keypoints": keypoints.float().cpu().numpy()},
                 )
             else:
                 detections = sv.Detections(
@@ -678,3 +702,27 @@ class RFDETRSeg2XLarge(RFDETR):
 
     def get_train_config(self, **kwargs):
         return SegmentationTrainConfig(**kwargs)
+
+
+class RFDETRPoseSmall(RFDETR):
+    """Train an RF-DETR Pose Small model for keypoint estimation."""
+
+    size = "rfdetr-pose-small"
+
+    def get_model_config(self, **kwargs):
+        return RFDETRPoseSmallConfig(**kwargs)
+
+    def get_train_config(self, **kwargs):
+        return PoseTrainConfig(**kwargs)
+
+
+class RFDETRPoseLarge(RFDETR):
+    """Train an RF-DETR Pose Large model for keypoint estimation."""
+
+    size = "rfdetr-pose-large"
+
+    def get_model_config(self, **kwargs):
+        return RFDETRPoseLargeConfig(**kwargs)
+
+    def get_train_config(self, **kwargs):
+        return PoseTrainConfig(**kwargs)

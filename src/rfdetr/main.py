@@ -361,10 +361,12 @@ class Model:
         if args.eval:
             test_stats, coco_evaluator = evaluate(model, criterion, postprocess, data_loader_val, base_ds, device, args)
             if args.output_dir:
-                if not args.segmentation_head:
-                    save_on_master(coco_evaluator.coco_eval["bbox"].eval, output_dir / "eval.pth")
-                else:
+                if args.segmentation_head:
                     save_on_master(coco_evaluator.coco_eval["segm"].eval, output_dir / "eval.pth")
+                elif getattr(args, "keypoint_head", False):
+                    save_on_master(coco_evaluator.coco_eval["keypoints"].eval, output_dir / "eval.pth")
+                else:
+                    save_on_master(coco_evaluator.coco_eval["bbox"].eval, output_dir / "eval.pth")
             return
 
         # for drop
@@ -461,17 +463,21 @@ class Model:
                 test_stats, coco_evaluator = evaluate(
                     model, criterion, postprocess, data_loader_val, base_ds, device, args=args, header="Test"
                 )
-            if not args.segmentation_head:
-                map_regular = test_stats["coco_eval_bbox"][0]
-            else:
+            if args.segmentation_head:
                 map_regular = test_stats["coco_eval_masks"][0]
+            elif getattr(args, "keypoint_head", False):
+                map_regular = test_stats["coco_eval_keypoints"][0]
+            else:
+                map_regular = test_stats["coco_eval_bbox"][0]
             _isbest = best_map_holder.update(map_regular, epoch, is_ema=False)
             if _isbest:
                 best_map_5095 = max(best_map_5095, map_regular)
-                if not args.segmentation_head:
-                    map50 = test_stats["coco_eval_bbox"][1]
-                else:
+                if args.segmentation_head:
                     map50 = test_stats["coco_eval_masks"][1]
+                elif getattr(args, "keypoint_head", False):
+                    map50 = test_stats["coco_eval_keypoints"][1]
+                else:
+                    map50 = test_stats["coco_eval_bbox"][1]
                 best_map_50 = max(best_map_50, map50)
                 checkpoint_path = output_dir / "checkpoint_best_regular.pth"
                 if not args.dont_save_weights:
@@ -503,17 +509,21 @@ class Model:
                     header="Test-ema",
                 )
                 log_stats.update({f"ema_test_{k}": v for k, v in ema_test_stats.items()})
-                if not args.segmentation_head:
-                    map_ema = ema_test_stats["coco_eval_bbox"][0]
-                else:
+                if args.segmentation_head:
                     map_ema = ema_test_stats["coco_eval_masks"][0]
+                elif getattr(args, "keypoint_head", False):
+                    map_ema = ema_test_stats["coco_eval_keypoints"][0]
+                else:
+                    map_ema = ema_test_stats["coco_eval_bbox"][0]
                 best_map_ema_5095 = max(best_map_ema_5095, map_ema)
                 _isbest = best_map_holder.update(map_ema, epoch, is_ema=True)
                 if _isbest:
-                    if not args.segmentation_head:
-                        map_ema_50 = ema_test_stats["coco_eval_bbox"][1]
-                    else:
+                    if args.segmentation_head:
                         map_ema_50 = ema_test_stats["coco_eval_masks"][1]
+                    elif getattr(args, "keypoint_head", False):
+                        map_ema_50 = ema_test_stats["coco_eval_keypoints"][1]
+                    else:
+                        map_ema_50 = ema_test_stats["coco_eval_bbox"][1]
                     best_map_ema_50 = max(best_map_ema_50, map_ema_50)
                     checkpoint_path = output_dir / "checkpoint_best_ema.pth"
                     if not args.dont_save_weights:
@@ -552,10 +562,12 @@ class Model:
                         if epoch % 50 == 0:
                             filenames.append(f"{epoch:03}.pth")
                         for name in filenames:
-                            if not args.segmentation_head:
-                                torch.save(coco_evaluator.coco_eval["bbox"].eval, output_dir / "eval" / name)
-                            else:
+                            if args.segmentation_head:
                                 torch.save(coco_evaluator.coco_eval["segm"].eval, output_dir / "eval" / name)
+                            elif getattr(args, "keypoint_head", False):
+                                torch.save(coco_evaluator.coco_eval["keypoints"].eval, output_dir / "eval" / name)
+                            else:
+                                torch.save(coco_evaluator.coco_eval["bbox"].eval, output_dir / "eval" / name)
 
             for callback in callbacks["on_fit_epoch_end"]:
                 callback(log_stats)
@@ -657,6 +669,8 @@ class Model:
             output_names = ["features"]
         elif self.args.segmentation_head:
             output_names = ["dets", "labels", "masks"]
+        elif getattr(self.args, "keypoint_head", False):
+            output_names = ["dets", "labels", "keypoints"]
         else:
             output_names = ["dets", "labels"]
 
@@ -685,6 +699,15 @@ class Model:
                         f"query_features: {masks['query_features'].shape}, "
                         f"bias: {masks['bias'].shape}"
                     )
+            elif getattr(self.args, "keypoint_head", False):
+                outputs = model(input_tensors)
+                dets = outputs["pred_boxes"]
+                labels = outputs["pred_logits"]
+                keypoints = outputs["pred_keypoints"]
+                logger.debug(
+                    f"PyTorch inference output shapes - Boxes: {dets.shape}, Labels: {labels.shape}, "
+                    f"Keypoints: {keypoints.shape}"
+                )
             else:
                 outputs = model(input_tensors)
                 dets = outputs["pred_boxes"]
@@ -1133,6 +1156,11 @@ def populate_args(
     early_stopping_min_delta=0.001,
     early_stopping_use_ema=False,
     gradient_checkpointing=False,
+    # Keypoint parameters
+    keypoint_head=False,
+    num_keypoints=17,
+    keypoint_l1_loss_coef=5.0,
+    keypoint_vis_loss_coef=1.0,
     # Additional
     subcommand=None,
     **extra_kwargs,  # To handle any unexpected arguments
@@ -1235,6 +1263,10 @@ def populate_args(
         early_stopping_min_delta=early_stopping_min_delta,
         early_stopping_use_ema=early_stopping_use_ema,
         gradient_checkpointing=gradient_checkpointing,
+        keypoint_head=keypoint_head,
+        num_keypoints=num_keypoints,
+        keypoint_l1_loss_coef=keypoint_l1_loss_coef,
+        keypoint_vis_loss_coef=keypoint_vis_loss_coef,
         **extra_kwargs,
     )
     return args

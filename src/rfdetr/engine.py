@@ -421,7 +421,12 @@ def evaluate(model, criterion, postprocess, data_loader, base_ds, device, args=N
 
     metric_logger = utils.MetricLogger(delimiter="  ")
     metric_logger.add_meter("class_error", utils.SmoothedValue(window_size=1, fmt="{value:.2f}"))
-    iou_types = ("bbox",) if not args.segmentation_head else ("bbox", "segm")
+    if args.segmentation_head:
+        iou_types = ("bbox", "segm")
+    elif getattr(args, "keypoint_head", False):
+        iou_types = ("bbox", "keypoints")
+    else:
+        iou_types = ("bbox",)
     coco_evaluator = CocoEvaluator(base_ds, iou_types, args.eval_max_dets)
 
     print_freq = args.print_freq if args is not None else 10
@@ -511,4 +516,7 @@ def evaluate(model, criterion, postprocess, data_loader, base_ds, device, args=N
             results_json_masks = coco_extended_metrics(coco_evaluator.coco_eval["segm"])
             stats["results_json_masks"] = results_json_masks
             stats["coco_eval_masks"] = coco_evaluator.coco_eval["segm"].stats.tolist()
+
+        if "keypoints" in iou_types:
+            stats["coco_eval_keypoints"] = coco_evaluator.coco_eval["keypoints"].stats.tolist()
     return stats, coco_evaluator

@@ -138,6 +138,12 @@ class Normalize(object):
             boxes = box_xyxy_to_cxcywh(boxes)
             boxes = boxes / torch.tensor([w, h, w, h], dtype=torch.float32)
             target["boxes"] = boxes
+        if "keypoints" in target:
+            kpts = target["keypoints"].clone()
+            # Normalize x,y coordinates to [0, 1] range
+            kpts[..., 0] = kpts[..., 0] / w
+            kpts[..., 1] = kpts[..., 1] / h
+            target["keypoints"] = kpts
         return image, target
 
 
@@ -394,11 +400,48 @@ class AlbumentationsWrapper:
                 raise ValueError(f"masks must have shape (N, H, W), got {masks_np.shape}")
             masks_np = masks_np.astype(np.uint8, copy=False)
             masks_list = [mask for mask in masks_np]
+
+        # Prepare keypoints for albumentations geometric pipeline
+        kpts_flat: List[Tuple[float, float]] = []
+        kpts_meta: List[Tuple[int, int, float]] = []  # (instance_idx, keypoint_idx, visibility)
+        has_keypoints = "keypoints" in target and target["keypoints"].shape[0] > 0
+        if has_keypoints:
+            kpts_tensor = target["keypoints"]  # [N, K, 3]
+            kpts_np = kpts_tensor.cpu().numpy() if torch.is_tensor(kpts_tensor) else np.array(kpts_tensor)
+            for inst_idx in range(kpts_np.shape[0]):
+                for kpt_idx in range(kpts_np.shape[1]):
+                    x, y, v = kpts_np[inst_idx, kpt_idx]
+                    if v > 0:
+                        kpts_flat.append((float(x), float(y)))
+                        kpts_meta.append((inst_idx, kpt_idx, float(v)))
+
         # Apply transform
         transform_kwargs = {"image": image_np, "bboxes": boxes_np, "category_ids": labels, "idxs": idxs}
         if masks_list is not None and len(masks_list) > 0:
             transform_kwargs["masks"] = masks_list
-        augmented = self.transform(**transform_kwargs)
+
+        if has_keypoints and kpts_flat:
+            # Rebuild A.Compose with keypoint_params so albumentations spatially
+            # transforms keypoint coordinates alongside boxes and the image.
+            inner_transforms = list(self.transform.transforms)
+            kpt_transform = A.Compose(
+                inner_transforms,
+                bbox_params=A.BboxParams(
+                    format="pascal_voc",
+                    label_fields=["category_ids", "idxs"],
+                    min_visibility=0.0,
+                    clip=True,
+                ),
+                keypoint_params=A.KeypointParams(
+                    format="xy",
+                    remove_invisible=False,
+                ),
+            )
+            transform_kwargs["keypoints"] = kpts_flat
+            augmented = kpt_transform(**transform_kwargs)
+        else:
+            augmented = self.transform(**transform_kwargs)
+
         target_out: Dict[str, Any] = target.copy()
         bboxes_aug = augmented["bboxes"]
         kept_idxs = augmented.get("idxs", idxs)
@@ -411,6 +454,10 @@ class AlbumentationsWrapper:
             if "masks" in target:
                 aug_height, aug_width = augmented["image"].shape[:2]
                 target_out["masks"] = torch.zeros((0, aug_height, aug_width), dtype=torch.bool)
+            # Override keypoints after _clear_per_instance_fields to preserve shape.
+            if has_keypoints:
+                num_kpts = target["keypoints"].shape[1]
+                target_out["keypoints"] = torch.zeros((0, num_kpts, 3), dtype=torch.float32)
         else:
             target_out["boxes"] = torch.as_tensor(bboxes_aug, dtype=torch.float32).reshape(-1, 4)
             target_out["labels"] = torch.tensor(augmented["category_ids"], dtype=torch.long)
@@ -420,6 +467,7 @@ class AlbumentationsWrapper:
             if "area" in target_out:
                 boxes = target_out["boxes"]
                 target_out["area"] = (boxes[:, 2] - boxes[:, 0]) * (boxes[:, 3] - boxes[:, 1])
+
         image_out = Image.fromarray(augmented["image"])
         if masks_list is not None and "masks" in augmented:
             height, width = augmented["image"].shape[:2]
@@ -429,6 +477,29 @@ class AlbumentationsWrapper:
                 target_out["masks"] = torch.zeros((0, height, width), dtype=torch.bool)
             else:
                 target_out["masks"] = torch.as_tensor(np.stack(masks_aug), dtype=torch.bool)
+
+        # Reconstruct keypoints tensor from augmented keypoint coordinates
+        if has_keypoints and len(bboxes_aug) > 0:
+            aug_height, aug_width = augmented["image"].shape[:2]
+            num_kpts = target["keypoints"].shape[1]
+            new_kpts = torch.zeros((len(bboxes_aug), num_kpts, 3), dtype=torch.float32)
+
+            if kpts_flat and "keypoints" in augmented:
+                aug_kpts = augmented["keypoints"]
+                # Map old instance indices to new positions after filtering
+                old_to_new = {old_idx: new_idx for new_idx, old_idx in enumerate(kept_idxs)}
+                for meta_idx, (inst_idx, kpt_idx, vis) in enumerate(kpts_meta):
+                    if inst_idx in old_to_new and meta_idx < len(aug_kpts):
+                        new_inst = old_to_new[inst_idx]
+                        ax, ay = aug_kpts[meta_idx]
+                        # Check if keypoint is still within image bounds
+                        if 0 <= ax <= aug_width and 0 <= ay <= aug_height:
+                            new_kpts[new_inst, kpt_idx] = torch.tensor([ax, ay, vis])
+                        else:
+                            new_kpts[new_inst, kpt_idx] = torch.tensor([0.0, 0.0, 0.0])
+
+            target_out["keypoints"] = new_kpts
+
         return image_out, target_out
 
     def __call__(self, image: PIL.Image.Image, target: Dict[str, Any]) -> Tuple[PIL.Image.Image, Dict[str, Any]]:

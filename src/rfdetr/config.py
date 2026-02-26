@@ -72,6 +72,8 @@ class ModelConfig(BaseConfig):
     cls_loss_coef: float = 1.0
     segmentation_head: bool = False
     mask_downsample_ratio: int = 4
+    keypoint_head: bool = False
+    num_keypoints: int = 17
     license: str = "Apache-2.0"
 
     @field_validator("pretrain_weights", mode="after")
@@ -280,6 +282,44 @@ class RFDETRSeg2XLargeConfig(RFDETRBaseConfig):
     num_classes: int = 90
 
 
+class RFDETRPoseBaseConfig(RFDETRBaseConfig):
+    """
+    The base configuration for RF-DETR Pose models.
+    """
+
+    keypoint_head: bool = True
+    num_keypoints: int = 17
+    num_classes: int = 1
+
+
+class RFDETRPoseSmallConfig(RFDETRPoseBaseConfig):
+    """
+    The configuration for an RF-DETR Pose Small model.
+    """
+
+    out_feature_indexes: List[int] = [3, 6, 9, 12]
+    num_windows: int = 2
+    dec_layers: int = 3
+    patch_size: int = 16
+    resolution: int = 560
+    positional_encoding_size: int = 35
+    pretrain_weights: Optional[str] = "rf-detr-small.pth"
+
+
+class RFDETRPoseLargeConfig(RFDETRPoseBaseConfig):
+    """
+    The configuration for an RF-DETR Pose Large model.
+    """
+
+    out_feature_indexes: List[int] = [3, 6, 9, 12]
+    num_windows: int = 2
+    dec_layers: int = 4
+    patch_size: int = 16
+    resolution: int = 672
+    positional_encoding_size: int = 42
+    pretrain_weights: Optional[str] = "rf-detr-large-2026.pth"
+
+
 class TrainConfig(BaseModel):
     lr: float = 1e-4
     lr_encoder: float = 1.5e-4
@@ -346,3 +386,16 @@ class SegmentationTrainConfig(TrainConfig):
     mask_dice_loss_coef: float = 5.0
     cls_loss_coef: float = 5.0
     segmentation_head: bool = True
+
+
+class PoseTrainConfig(TrainConfig):
+    """
+    Training configuration for RF-DETR Pose keypoint estimation models.
+    """
+
+    keypoint_head: bool = True
+    num_keypoints: int = 17
+    keypoint_l1_loss_coef: float = 5.0
+    keypoint_vis_loss_coef: float = 1.0
+    cls_loss_coef: float = 2.0
+    square_resize_div_64: bool = True

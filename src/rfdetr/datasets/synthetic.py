@@ -12,7 +12,7 @@ import logging
 import random
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Dict, Tuple, Union
+from typing import Dict, List, Tuple, Union
 
 import cv2
 import numpy as np
@@ -332,6 +332,208 @@ def generate_coco_dataset(
             ann["category_id"] = sparse_id[ann["category_id"]]
         with open(annotations_path, "w") as write_handle:
             json.dump(coco_json, write_handle)
+
+
+# COCO keypoint format constants
+COCO_PERSON_KEYPOINTS = [
+    "nose",
+    "left_eye",
+    "right_eye",
+    "left_ear",
+    "right_ear",
+    "left_shoulder",
+    "right_shoulder",
+    "left_elbow",
+    "right_elbow",
+    "left_wrist",
+    "right_wrist",
+    "left_hip",
+    "right_hip",
+    "left_knee",
+    "right_knee",
+    "left_ankle",
+    "right_ankle",
+]
+
+COCO_PERSON_SKELETON = [
+    [16, 14],
+    [14, 12],
+    [17, 15],
+    [15, 13],
+    [12, 13],
+    [6, 12],
+    [7, 13],
+    [6, 7],
+    [6, 8],
+    [7, 9],
+    [8, 10],
+    [9, 11],
+    [2, 3],
+    [1, 2],
+    [1, 3],
+    [2, 4],
+    [3, 5],
+    [4, 6],
+    [5, 7],
+]
+
+
+def _generate_person_keypoints(x: int, y: int, w: int, h: int) -> List[int]:
+    """Generate synthetic keypoints for a person bounding box.
+
+    Places keypoints at anatomically approximate positions relative to the
+    bounding box. All keypoints are marked as visible (v=2).
+
+    Args:
+        x: Left edge of bounding box.
+        y: Top edge of bounding box.
+        w: Width of bounding box.
+        h: Height of bounding box.
+
+    Returns:
+        Flat list of [x1, y1, v1, x2, y2, v2, ...] for 17 keypoints.
+    """
+    # Keypoint positions as fractions of bbox (x_frac, y_frac)
+    # Order: nose, left_eye, right_eye, left_ear, right_ear,
+    #        left_shoulder, right_shoulder, left_elbow, right_elbow,
+    #        left_wrist, right_wrist, left_hip, right_hip,
+    #        left_knee, right_knee, left_ankle, right_ankle
+    positions = [
+        (0.50, 0.05),  # nose
+        (0.45, 0.03),  # left_eye
+        (0.55, 0.03),  # right_eye
+        (0.38, 0.05),  # left_ear
+        (0.62, 0.05),  # right_ear
+        (0.30, 0.18),  # left_shoulder
+        (0.70, 0.18),  # right_shoulder
+        (0.20, 0.35),  # left_elbow
+        (0.80, 0.35),  # right_elbow
+        (0.15, 0.48),  # left_wrist
+        (0.85, 0.48),  # right_wrist
+        (0.35, 0.55),  # left_hip
+        (0.65, 0.55),  # right_hip
+        (0.33, 0.75),  # left_knee
+        (0.67, 0.75),  # right_knee
+        (0.30, 0.95),  # left_ankle
+        (0.70, 0.95),  # right_ankle
+    ]
+
+    keypoints: List[int] = []
+    for fx, fy in positions:
+        kx = int(x + w * fx)
+        ky = int(y + h * fy)
+        keypoints.extend([kx, ky, 2])  # v=2 means visible
+
+    return keypoints
+
+
+def generate_coco_pose_dataset(
+    output_dir: str,
+    num_images: int,
+    img_size: int = 640,
+    min_objects: int = 1,
+    max_objects: int = 3,
+    split_ratios: SplitRatiosType = DEFAULT_SPLIT_RATIOS,
+) -> None:
+    """Generate a synthetic pose dataset in COCO keypoint format.
+
+    Creates simple person-like rectangles with synthetic keypoint annotations
+    at known positions relative to bounding boxes. Each annotation includes
+    17 COCO person keypoints.
+
+    Args:
+        output_dir: Directory where the dataset will be saved.
+        num_images: Total number of images to generate.
+        img_size: Size of the square images.
+        min_objects: Minimum persons per image.
+        max_objects: Maximum persons per image.
+        split_ratios: Dataset split ratios.
+    """
+    split_ratios_dict = _normalize_split_ratios(split_ratios)
+    output_path = Path(output_dir)
+    output_path.mkdir(parents=True, exist_ok=True)
+
+    all_indices = list(range(num_images))
+    random.shuffle(all_indices)
+
+    start_idx = 0
+    for split, ratio in split_ratios_dict.items():
+        num_split = int(num_images * ratio)
+        if num_split == 0 and ratio > 0:
+            num_split = 1
+        split_indices = all_indices[start_idx : start_idx + num_split]
+        start_idx += num_split
+        if not split_indices:
+            continue
+
+        split_dir = output_path / split
+        split_dir.mkdir(parents=True, exist_ok=True)
+
+        coco_json = {
+            "images": [],
+            "annotations": [],
+            "categories": [
+                {
+                    "id": 1,
+                    "name": "person",
+                    "supercategory": "person",
+                    "keypoints": COCO_PERSON_KEYPOINTS,
+                    "skeleton": COCO_PERSON_SKELETON,
+                }
+            ],
+        }
+
+        ann_id = 1
+        for img_idx in split_indices:
+            img = np.ones((img_size, img_size, 3), dtype=np.uint8) * 128
+            file_name = f"{img_idx:06d}.jpg"
+
+            coco_json["images"].append(
+                {
+                    "id": img_idx,
+                    "file_name": file_name,
+                    "width": img_size,
+                    "height": img_size,
+                }
+            )
+
+            num_persons = random.randint(min_objects, max_objects)
+            for _ in range(num_persons):
+                # Generate a person-like bounding box
+                w = random.randint(img_size // 8, img_size // 3)
+                h = random.randint(int(w * 1.5), int(w * 3))
+                h = min(h, img_size - 10)
+                w = min(w, img_size - 10)
+                x = random.randint(5, img_size - w - 5)
+                y = random.randint(5, img_size - h - 5)
+
+                # Draw rectangle
+                cv2.rectangle(img, (x, y), (x + w, y + h), (0, 200, 0), -1)
+
+                # Generate keypoints relative to bounding box
+                keypoints = _generate_person_keypoints(x, y, w, h)
+
+                num_visible = sum(1 for i in range(0, len(keypoints), 3) if keypoints[i + 2] > 0)
+
+                coco_json["annotations"].append(
+                    {
+                        "id": ann_id,
+                        "image_id": img_idx,
+                        "category_id": 1,
+                        "bbox": [x, y, w, h],
+                        "area": w * h,
+                        "iscrowd": 0,
+                        "keypoints": keypoints,
+                        "num_keypoints": num_visible,
+                    }
+                )
+                ann_id += 1
+
+            cv2.imwrite(str(split_dir / file_name), img)
+
+        ann_path = split_dir / "_annotations.coco.json"
+        with open(ann_path, "w") as f:
+            json.dump(coco_json, f)
 
 
 if __name__ == "__main__":
