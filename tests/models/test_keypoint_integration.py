@@ -133,8 +133,8 @@ class TestPostProcessKeypoints:
         # x=0.5 * 640 = 320, y=0.5 * 480 = 240
         assert result_kpts[0, 0, 0].item() == pytest.approx(320.0, abs=1.0)
         assert result_kpts[0, 0, 1].item() == pytest.approx(240.0, abs=1.0)
-        # Visibility should be sigmoid of the logit
-        assert 0 <= result_kpts[0, 0, 2].item() <= 1
+        # Visibility is converted to COCO format: 0 (not visible) or 2 (visible)
+        assert result_kpts[0, 0, 2].item() in (0.0, 2.0)
 
     def test_postprocess_without_keypoints(self) -> None:
         """PostProcess should work normally when no keypoints are present."""

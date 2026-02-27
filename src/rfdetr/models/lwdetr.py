@@ -46,6 +46,33 @@ from rfdetr.util.misc import (
     nested_tensor_from_tensor_list,
 )
 
+# COCO keypoint OKS sigmas — inverse-sigma weights normalized to mean=1.
+# Tighter-tolerance keypoints (nose, eyes) get higher weight in the L1 loss
+# so training aligns with the OKS-based AP evaluation metric.
+_COCO_KPT_SIGMAS = torch.tensor(
+    [
+        0.026,
+        0.025,
+        0.025,
+        0.035,
+        0.035,
+        0.079,
+        0.079,
+        0.072,
+        0.072,
+        0.062,
+        0.062,
+        0.107,
+        0.107,
+        0.087,
+        0.087,
+        0.089,
+        0.089,
+    ]
+)
+_COCO_KPT_SIGMA_WEIGHTS = 1.0 / _COCO_KPT_SIGMAS
+_COCO_KPT_SIGMA_WEIGHTS = _COCO_KPT_SIGMA_WEIGHTS / _COCO_KPT_SIGMA_WEIGHTS.mean()
+
 
 class LWDETR(nn.Module):
     """This is the Group DETR v3 module that performs object detection"""
@@ -201,7 +228,7 @@ class LWDETR(nn.Module):
 
             outputs_keypoints = None
             if self.keypoint_head is not None:
-                outputs_keypoints = self.keypoint_head(hs)
+                outputs_keypoints = self.keypoint_head(hs, outputs_coord)
 
             if self.segmentation_head is not None:
                 outputs_masks = seg_head_fwd(features[0].tensors, hs, samples.tensors.shape[-2:])
@@ -239,14 +266,22 @@ class LWDETR(nn.Module):
                     skip_blocks=True,
                 )[0]
 
+            kpts_enc = None
+            if self.keypoint_head is not None:
+                kpts_enc = self.keypoint_head(hs_enc, ref_enc)
+
             if hs is not None:
                 out["enc_outputs"] = {"pred_logits": cls_enc, "pred_boxes": ref_enc}
                 if self.segmentation_head is not None:
                     out["enc_outputs"]["pred_masks"] = masks_enc
+                if self.keypoint_head is not None:
+                    out["enc_outputs"]["pred_keypoints"] = kpts_enc
             else:
                 out = {"pred_logits": cls_enc, "pred_boxes": ref_enc}
                 if self.segmentation_head is not None:
                     out["pred_masks"] = masks_enc
+                if self.keypoint_head is not None:
+                    out["pred_keypoints"] = kpts_enc
 
         return out
 
@@ -273,7 +308,7 @@ class LWDETR(nn.Module):
                 outputs_coord = (self.bbox_embed(hs) + ref_unsigmoid).sigmoid()
             outputs_class = self.class_embed(hs)
             if self.keypoint_head is not None:
-                outputs_keypoints = self.keypoint_head(hs)
+                outputs_keypoints = self.keypoint_head(hs, outputs_coord)
             if self.segmentation_head is not None:
                 outputs_masks = self.segmentation_head(
                     srcs[0],
@@ -629,7 +664,11 @@ class SetCriterion(nn.Module):
         return losses
 
     def loss_keypoints(self, outputs, targets, indices, num_boxes):
-        """Compute keypoint losses: L1 on visible keypoint coordinates and BCE on visibility.
+        """Compute keypoint losses: sigma-weighted L1 on coordinates and BCE on visibility.
+
+        Uses COCO OKS sigmas to weight per-keypoint L1 loss, giving higher weight to
+        keypoints with tighter evaluation tolerances (e.g., nose, eyes). Trains on both
+        visible (v=2) and occluded (v=1) keypoints since COCO provides coordinates for both.
 
         Args:
             outputs: Model outputs containing 'pred_keypoints' of shape [B, Q, K, 3].
@@ -641,7 +680,12 @@ class SetCriterion(nn.Module):
         Returns:
             Dict with 'loss_keypoint_l1' and 'loss_keypoint_vis' losses.
         """
-        assert "pred_keypoints" in outputs
+        if "pred_keypoints" not in outputs:
+            device = next(iter(outputs.values())).device
+            return {
+                "loss_keypoint_l1": torch.tensor(0.0, device=device),
+                "loss_keypoint_vis": torch.tensor(0.0, device=device),
+            }
         idx = self._get_src_permutation_idx(indices)
         src_keypoints = outputs["pred_keypoints"][idx]  # [N_matched, K, 3]
 
@@ -655,16 +699,28 @@ class SetCriterion(nn.Module):
                 "loss_keypoint_vis": src_keypoints.sum(),
             }
 
-        # Visibility mask: target visibility > 0 means the keypoint is labeled
-        vis_mask = target_keypoints[..., 2] > 0  # [N_matched, K]
+        # Visibility mask: use both visible (v=2) and occluded (v=1) keypoints.
+        # COCO provides coordinates for v=1 keypoints; training on them improves AP.
+        vis_mask = target_keypoints[..., 2] >= 1  # [N_matched, K]
 
-        # L1 loss on (x, y) for visible keypoints only
+        # L1 loss on (x, y) for visible/occluded keypoints
         src_xy = src_keypoints[..., :2]  # [N_matched, K, 2]
         tgt_xy = target_keypoints[..., :2]  # [N_matched, K, 2]
         l1_loss = F.l1_loss(src_xy, tgt_xy, reduction="none")  # [N_matched, K, 2]
-        # Mask to only visible keypoints
-        l1_loss = l1_loss * vis_mask.unsqueeze(-1)
-        loss_keypoint_l1 = l1_loss.sum() / max(vis_mask.sum().item(), 1)
+        # Sum over xy dim to get per-keypoint loss
+        l1_per_kpt = l1_loss.sum(-1)  # [N_matched, K]
+        # Apply sigma weights (higher weight for tighter-tolerance keypoints)
+        sigma_weights = _COCO_KPT_SIGMA_WEIGHTS.to(l1_per_kpt.device)
+        # Trim or pad weights to match actual num_keypoints
+        K = l1_per_kpt.shape[-1]
+        if K <= sigma_weights.shape[0]:
+            sigma_weights = sigma_weights[:K]
+        else:
+            sigma_weights = F.pad(sigma_weights, (0, K - sigma_weights.shape[0]), value=1.0)
+        l1_per_kpt = l1_per_kpt * sigma_weights
+        # Mask to only annotated keypoints
+        l1_per_kpt = l1_per_kpt * vis_mask
+        loss_keypoint_l1 = l1_per_kpt.sum() / max(vis_mask.sum().item(), 1)
 
         # BCE loss on visibility
         src_vis = src_keypoints[..., 2]  # [N_matched, K] - raw logits
@@ -923,8 +979,8 @@ class PostProcess(nn.Module):
                 kpts_i_scaled = kpts_i.clone()
                 kpts_i_scaled[..., 0] = kpts_i[..., 0] * w
                 kpts_i_scaled[..., 1] = kpts_i[..., 1] * h
-                # Sigmoid visibility logits to scores
-                kpts_i_scaled[..., 2] = kpts_i[..., 2].sigmoid()
+                # Convert visibility logits to COCO format: 0 (not visible) or 2 (visible)
+                kpts_i_scaled[..., 2] = (kpts_i[..., 2].sigmoid() >= 0.5).float() * 2
                 res_i["keypoints"] = kpts_i_scaled
                 results.append(res_i)
         else:

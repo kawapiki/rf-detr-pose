@@ -17,6 +17,7 @@
 Transforms and data augmentation for both image + bbox.
 """
 
+import copy
 import random
 from collections.abc import Sequence
 from typing import Any, Dict, List, Optional, Tuple, Union
@@ -299,6 +300,33 @@ class AlbumentationsWrapper:
         return f"{self.__class__.__name__}(transform={transform}, type={transform_type})"
 
     @staticmethod
+    def _has_horizontal_flip(augmented: Dict[str, Any]) -> bool:
+        """Check if a horizontal flip was applied in this augmentation result.
+
+        Inspects the replay data from albumentations to determine if a
+        ``HorizontalFlip`` transform was actually applied (not just present).
+
+        Args:
+            augmented: The dict returned by an albumentations Compose call.
+
+        Returns:
+            True if a horizontal flip was applied.
+        """
+        replay = augmented.get("replay")
+        if replay is None:
+            return False
+        for entry in replay.get("transforms", []):
+            name = entry.get("__class_fullname__", "")
+            if name.endswith("HorizontalFlip") and entry.get("applied", False):
+                return True
+            # Check nested transforms (e.g. inside a ReplayCompose)
+            for nested in entry.get("transforms", []):
+                nested_name = nested.get("__class_fullname__", "")
+                if nested_name.endswith("HorizontalFlip") and nested.get("applied", False):
+                    return True
+        return False
+
+    @staticmethod
     def _boxes_to_numpy(boxes: Union[torch.Tensor, np.ndarray]) -> np.ndarray:
         """Convert boxes to numpy array and validate shape.
 
@@ -421,10 +449,11 @@ class AlbumentationsWrapper:
             transform_kwargs["masks"] = masks_list
 
         if has_keypoints and kpts_flat:
-            # Rebuild A.Compose with keypoint_params so albumentations spatially
-            # transforms keypoint coordinates alongside boxes and the image.
-            inner_transforms = list(self.transform.transforms)
-            kpt_transform = A.Compose(
+            # Rebuild with ReplayCompose so we can detect if HorizontalFlip was applied
+            # and swap left/right keypoint pairs accordingly.
+            # Deep-copy to avoid ReplayCompose mutating the shared transform objects.
+            inner_transforms = copy.deepcopy(list(self.transform.transforms))
+            kpt_transform = A.ReplayCompose(
                 inner_transforms,
                 bbox_params=A.BboxParams(
                     format="pascal_voc",
@@ -497,6 +526,16 @@ class AlbumentationsWrapper:
                             new_kpts[new_inst, kpt_idx] = torch.tensor([ax, ay, vis])
                         else:
                             new_kpts[new_inst, kpt_idx] = torch.tensor([0.0, 0.0, 0.0])
+
+            # Swap left/right keypoint pairs after horizontal flip.
+            # COCO pairs: (1,2) eyes, (3,4) ears, (5,6) shoulders, (7,8) elbows,
+            # (9,10) wrists, (11,12) hips, (13,14) knees, (15,16) ankles.
+            flipped = self._has_horizontal_flip(augmented)
+            if flipped:
+                _COCO_FLIP_PAIRS = [(1, 2), (3, 4), (5, 6), (7, 8), (9, 10), (11, 12), (13, 14), (15, 16)]
+                for left, right in _COCO_FLIP_PAIRS:
+                    if left < num_kpts and right < num_kpts:
+                        new_kpts[:, [left, right]] = new_kpts[:, [right, left]]
 
             target_out["keypoints"] = new_kpts
 

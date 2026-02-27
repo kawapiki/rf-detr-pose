@@ -36,8 +36,9 @@ class TestKeypointHeadForward:
         """Forward pass produces correct output shape for a single decoder layer."""
         head = KeypointHead(hidden_dim=256, num_keypoints=17).to(device)
         query_features = torch.randn(2, 300, 256, device=device)
+        pred_boxes = torch.rand(2, 300, 4, device=device)
 
-        output = head(query_features)
+        output = head(query_features, pred_boxes)
 
         assert output.shape == (2, 300, 17, 3)
 
@@ -45,17 +46,19 @@ class TestKeypointHeadForward:
         """Forward pass works with stacked decoder layer features."""
         head = KeypointHead(hidden_dim=128, num_keypoints=5).to(device)
         query_features = torch.randn(4, 3, 100, 128, device=device)
+        pred_boxes = torch.rand(4, 3, 100, 4, device=device)
 
-        output = head(query_features)
+        output = head(query_features, pred_boxes)
 
         assert output.shape == (4, 3, 100, 5, 3)
 
     def test_xy_coords_in_zero_one_range(self, device: str) -> None:
-        """XY coordinates should be sigmoid-activated and in [0, 1]."""
+        """XY coordinates should be in [0, 1] (box-relative offsets clamped)."""
         head = KeypointHead(hidden_dim=64, num_keypoints=3).to(device)
         query_features = torch.randn(1, 10, 64, device=device)
+        pred_boxes = torch.tensor([[[0.5, 0.5, 0.4, 0.4]]] * 10, device=device).reshape(1, 10, 4)
 
-        output = head(query_features)
+        output = head(query_features, pred_boxes)
 
         xy = output[..., :2]
         assert (xy >= 0).all()
@@ -78,7 +81,7 @@ class TestKeypointHeadInit:
         head = KeypointHead(hidden_dim=32, num_keypoints=5, num_layers=2)
 
         assert head.num_keypoints == 5
-        output = head(torch.randn(1, 4, 32))
+        output = head(torch.randn(1, 4, 32), torch.rand(1, 4, 4))
         assert output.shape == (1, 4, 5, 3)
 
 
@@ -96,7 +99,7 @@ class TestKeypointHeadExport:
         head = KeypointHead(hidden_dim=64, num_keypoints=3)
         head.export()
 
-        output = head(torch.randn(1, 5, 64))
+        output = head(torch.randn(1, 5, 64), torch.rand(1, 5, 4))
         vis = output[..., 2]
 
         assert head._export

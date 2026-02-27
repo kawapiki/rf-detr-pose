@@ -138,6 +138,19 @@ class Model:
                 if any(name.endswith(x) for x in query_param_names):
                     checkpoint["model"][name] = state[:num_desired_queries]
 
+            # Filter out checkpoint keys whose shapes don't match the current
+            # model (e.g. positional embeddings when resolution changes).
+            model_state = self.model.state_dict()
+            for key in list(checkpoint["model"].keys()):
+                if key in model_state and checkpoint["model"][key].shape != model_state[key].shape:
+                    logger.warning(
+                        "Skipping %s: checkpoint shape %s != model shape %s",
+                        key,
+                        checkpoint["model"][key].shape,
+                        model_state[key].shape,
+                    )
+                    del checkpoint["model"][key]
+
             self.model.load_state_dict(checkpoint["model"], strict=False)
 
         if args.backbone_lora:
@@ -1161,6 +1174,7 @@ def populate_args(
     num_keypoints=17,
     keypoint_l1_loss_coef=5.0,
     keypoint_vis_loss_coef=1.0,
+    set_cost_keypoint=5.0,
     # Additional
     subcommand=None,
     **extra_kwargs,  # To handle any unexpected arguments
@@ -1228,7 +1242,7 @@ def populate_args(
         use_position_supervised_loss=use_position_supervised_loss,
         ia_bce_loss=ia_bce_loss,
         dataset_file=dataset_file,
-        coco_path=coco_path,
+        coco_path=coco_path if coco_path is not None else (dataset_dir if dataset_file == "coco" else None),
         dataset_dir=dataset_dir,
         square_resize_div_64=square_resize_div_64,
         aug_config=aug_config,
@@ -1267,6 +1281,7 @@ def populate_args(
         num_keypoints=num_keypoints,
         keypoint_l1_loss_coef=keypoint_l1_loss_coef,
         keypoint_vis_loss_coef=keypoint_vis_loss_coef,
+        set_cost_keypoint=set_cost_keypoint,
         **extra_kwargs,
     )
     return args

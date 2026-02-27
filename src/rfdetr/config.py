@@ -295,28 +295,34 @@ class RFDETRPoseBaseConfig(RFDETRBaseConfig):
 class RFDETRPoseSmallConfig(RFDETRPoseBaseConfig):
     """
     The configuration for an RF-DETR Pose Small model.
+
+    Architecture matches RFDETRSmallConfig so pretrained detection weights
+    load without shape mismatches; only the new keypoint head is untrained.
     """
 
     out_feature_indexes: List[int] = [3, 6, 9, 12]
     num_windows: int = 2
     dec_layers: int = 3
     patch_size: int = 16
-    resolution: int = 560
-    positional_encoding_size: int = 35
+    resolution: int = 512
+    positional_encoding_size: int = 32
     pretrain_weights: Optional[str] = "rf-detr-small.pth"
 
 
 class RFDETRPoseLargeConfig(RFDETRPoseBaseConfig):
     """
     The configuration for an RF-DETR Pose Large model.
+
+    Architecture matches RFDETRLargeConfig so pretrained detection weights
+    load without shape mismatches; only the new keypoint head is untrained.
     """
 
     out_feature_indexes: List[int] = [3, 6, 9, 12]
     num_windows: int = 2
     dec_layers: int = 4
     patch_size: int = 16
-    resolution: int = 672
-    positional_encoding_size: int = 42
+    resolution: int = 704
+    positional_encoding_size: int = 704 // 16
     pretrain_weights: Optional[str] = "rf-detr-large-2026.pth"
 
 
@@ -397,5 +403,7 @@ class PoseTrainConfig(TrainConfig):
     num_keypoints: int = 17
     keypoint_l1_loss_coef: float = 5.0
     keypoint_vis_loss_coef: float = 1.0
+    set_cost_keypoint: float = 5.0
     cls_loss_coef: float = 2.0
     square_resize_div_64: bool = True
+    dataset_file: Literal["coco", "o365", "roboflow", "yolo"] = "coco"
