@@ -52,7 +52,11 @@ class CocoEvaluator(object):
         self.coco_eval = {}
         for iou_type in iou_types:
             self.coco_eval[iou_type] = COCOeval(coco_gt, iouType=iou_type)
-            self.coco_eval[iou_type].params.maxDets = [1, 10, max_dets]
+            if iou_type == "keypoints":
+                # pycocotools keypoint evaluation expects maxDets=[20]
+                self.coco_eval[iou_type].params.maxDets = [20]
+            else:
+                self.coco_eval[iou_type].params.maxDets = [1, 10, max_dets]
 
         self.img_ids: List[int] = []
         self.eval_imgs: Dict[str, List[COCOeval]] = {k: [] for k in iou_types}
@@ -212,9 +216,16 @@ class CocoEvaluator(object):
 
             boxes = prediction["boxes"]
             boxes = sv.xyxy_to_xywh(boxes.cpu().numpy()).tolist()
-            scores = prediction["scores"].tolist()
+            scores = prediction["scores"]
             labels = prediction["labels"].tolist()
             keypoints = prediction["keypoints"]
+            # Compute combined score: detection confidence * mean keypoint visibility.
+            # This is standard practice (ViTPose, HRNet) so pycocotools ranks
+            # predictions by both detection and keypoint quality.
+            kpt_vis = keypoints[..., 2]  # [num_select, K] — already 0 or 2
+            mean_kpt_conf = (kpt_vis > 0).float().mean(dim=-1)  # fraction of visible kpts
+            combined_scores = (scores * mean_kpt_conf).tolist()
+            scores = scores.tolist()
             keypoints = keypoints.flatten(start_dim=1).tolist()
             use_raw_category_ids = self._should_use_raw_category_ids(labels)
             for k, keypoint in enumerate(keypoints):
@@ -227,7 +238,7 @@ class CocoEvaluator(object):
                         "image_id": original_id,
                         "category_id": category_id,
                         "keypoints": keypoint,
-                        "score": scores[k],
+                        "score": combined_scores[k],
                     }
                 )
         return coco_results

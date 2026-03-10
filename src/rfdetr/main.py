@@ -1172,6 +1172,8 @@ def populate_args(
     # Keypoint parameters
     keypoint_head=False,
     num_keypoints=17,
+    kpt_embed_dim=64,
+    kpt_downsample_ratio=8,
     keypoint_l1_loss_coef=5.0,
     keypoint_vis_loss_coef=1.0,
     set_cost_keypoint=5.0,
@@ -1279,6 +1281,8 @@ def populate_args(
         gradient_checkpointing=gradient_checkpointing,
         keypoint_head=keypoint_head,
         num_keypoints=num_keypoints,
+        kpt_embed_dim=kpt_embed_dim,
+        kpt_downsample_ratio=kpt_downsample_ratio,
         keypoint_l1_loss_coef=keypoint_l1_loss_coef,
         keypoint_vis_loss_coef=keypoint_vis_loss_coef,
         set_cost_keypoint=set_cost_keypoint,

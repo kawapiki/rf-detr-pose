@@ -9,8 +9,6 @@
 import pytest
 import torch
 
-from rfdetr.models.keypoint_head import KeypointHead
-
 
 class TestLossKeypoints:
     """Test the SetCriterion.loss_keypoints method."""

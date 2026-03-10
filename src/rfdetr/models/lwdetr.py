@@ -228,7 +228,7 @@ class LWDETR(nn.Module):
 
             outputs_keypoints = None
             if self.keypoint_head is not None:
-                outputs_keypoints = self.keypoint_head(hs, outputs_coord)
+                outputs_keypoints = self.keypoint_head(features[0].tensors, hs, samples.tensors.shape[-2:])
 
             if self.segmentation_head is not None:
                 outputs_masks = seg_head_fwd(features[0].tensors, hs, samples.tensors.shape[-2:])
@@ -268,7 +268,9 @@ class LWDETR(nn.Module):
 
             kpts_enc = None
             if self.keypoint_head is not None:
-                kpts_enc = self.keypoint_head(hs_enc, ref_enc)
+                kpts_enc = self.keypoint_head(
+                    features[0].tensors, [hs_enc], samples.tensors.shape[-2:], skip_blocks=True
+                )[0]
 
             if hs is not None:
                 out["enc_outputs"] = {"pred_logits": cls_enc, "pred_boxes": ref_enc}
@@ -308,7 +310,7 @@ class LWDETR(nn.Module):
                 outputs_coord = (self.bbox_embed(hs) + ref_unsigmoid).sigmoid()
             outputs_class = self.class_embed(hs)
             if self.keypoint_head is not None:
-                outputs_keypoints = self.keypoint_head(hs, outputs_coord)
+                outputs_keypoints = self.keypoint_head(srcs[0], [hs], tensors.shape[-2:])[-1]
             if self.segmentation_head is not None:
                 outputs_masks = self.segmentation_head(
                     srcs[0],
@@ -1060,9 +1062,15 @@ def build_model(args):
 
     keypoint_head = None
     if getattr(args, "keypoint_head", False):
-        from rfdetr.models.keypoint_head import KeypointHead
+        from rfdetr.models.keypoint_head import SpatialKeypointHead
 
-        keypoint_head = KeypointHead(args.hidden_dim, getattr(args, "num_keypoints", 17))
+        keypoint_head = SpatialKeypointHead(
+            hidden_dim=args.hidden_dim,
+            num_keypoints=getattr(args, "num_keypoints", 17),
+            num_blocks=args.dec_layers,
+            kpt_embed_dim=getattr(args, "kpt_embed_dim", 64),
+            downsample_ratio=getattr(args, "kpt_downsample_ratio", 8),
+        )
 
     model = LWDETR(
         backbone,

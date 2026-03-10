@@ -74,6 +74,8 @@ class ModelConfig(BaseConfig):
     mask_downsample_ratio: int = 4
     keypoint_head: bool = False
     num_keypoints: int = 17
+    kpt_embed_dim: int = 64
+    kpt_downsample_ratio: int = 8
     license: str = "Apache-2.0"
 
     @field_validator("pretrain_weights", mode="after")
@@ -289,6 +291,8 @@ class RFDETRPoseBaseConfig(RFDETRBaseConfig):
 
     keypoint_head: bool = True
     num_keypoints: int = 17
+    kpt_embed_dim: int = 64
+    kpt_downsample_ratio: int = 8
     num_classes: int = 1
 
 

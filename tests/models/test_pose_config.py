@@ -34,8 +34,8 @@ class TestPoseModelConfigs:
     @pytest.mark.parametrize(
         "config_class,expected_resolution,expected_dec_layers",
         [
-            pytest.param(RFDETRPoseSmallConfig, 560, 3, id="small"),
-            pytest.param(RFDETRPoseLargeConfig, 672, 4, id="large"),
+            pytest.param(RFDETRPoseSmallConfig, 512, 3, id="small"),
+            pytest.param(RFDETRPoseLargeConfig, 704, 4, id="large"),
         ],
     )
     def test_pose_variant_configs(self, config_class, expected_resolution, expected_dec_layers) -> None:
@@ -68,6 +68,12 @@ class TestPoseTrainConfig:
         assert config.keypoint_vis_loss_coef == 1.0
         assert config.cls_loss_coef == 2.0
         assert config.square_resize_div_64 is True
+
+    def test_dataset_file_defaults_to_coco(self) -> None:
+        """PoseTrainConfig should default dataset_file to 'coco'."""
+        config = PoseTrainConfig(dataset_dir="/tmp")
+
+        assert config.dataset_file == "coco"
 
     def test_accepts_extra_fields(self) -> None:
         """PoseTrainConfig inherits TrainConfig which allows extra fields."""
