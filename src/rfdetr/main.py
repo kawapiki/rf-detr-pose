@@ -1176,6 +1176,7 @@ def populate_args(
     kpt_downsample_ratio=8,
     keypoint_l1_loss_coef=5.0,
     keypoint_vis_loss_coef=1.0,
+    keypoint_oks_loss_coef=0.0,
     set_cost_keypoint=5.0,
     # Additional
     subcommand=None,
@@ -1285,6 +1286,7 @@ def populate_args(
         kpt_downsample_ratio=kpt_downsample_ratio,
         keypoint_l1_loss_coef=keypoint_l1_loss_coef,
         keypoint_vis_loss_coef=keypoint_vis_loss_coef,
+        keypoint_oks_loss_coef=keypoint_oks_loss_coef,
         set_cost_keypoint=set_cost_keypoint,
         **extra_kwargs,
     )

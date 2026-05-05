@@ -666,26 +666,35 @@ class SetCriterion(nn.Module):
         return losses
 
     def loss_keypoints(self, outputs, targets, indices, num_boxes):
-        """Compute keypoint losses: sigma-weighted L1 on coordinates and BCE on visibility.
+        """Compute keypoint losses: sigma-weighted L1, OKS, and BCE on visibility.
 
-        Uses COCO OKS sigmas to weight per-keypoint L1 loss, giving higher weight to
-        keypoints with tighter evaluation tolerances (e.g., nose, eyes). Trains on both
-        visible (v=2) and occluded (v=1) keypoints since COCO provides coordinates for both.
+        Three losses are returned:
+
+        - ``loss_keypoint_l1``: sigma-weighted L1 on (x, y) coordinates. Trains on
+          both visible (v=2) and occluded (v=1) keypoints. Linear gradient is
+          useful for early convergence when predictions are far from ground truth.
+        - ``loss_keypoint_oks``: ``1 - OKS`` where OKS is the COCO keypoint
+          similarity, ``exp(-d² / (2 · area · (2σ)²))``. Directly aligns with
+          the COCO eval metric. Exponential gradient near ground truth gives
+          stronger fine-localization signal than L1.
+        - ``loss_keypoint_vis``: BCE-with-logits on visibility prediction.
 
         Args:
             outputs: Model outputs containing 'pred_keypoints' of shape [B, Q, K, 3].
             targets: List of target dicts with 'keypoints' of shape [N, K, 3] where
-                last dim is (x, y, visibility).
+                last dim is (x, y, visibility), and 'boxes' of shape [N, 4] in
+                normalized cxcywh format (used for OKS area scaling).
             indices: Matched indices from the Hungarian matcher.
             num_boxes: Number of matched boxes for normalization.
 
         Returns:
-            Dict with 'loss_keypoint_l1' and 'loss_keypoint_vis' losses.
+            Dict with 'loss_keypoint_l1', 'loss_keypoint_oks', and 'loss_keypoint_vis'.
         """
         if "pred_keypoints" not in outputs:
             device = next(iter(outputs.values())).device
             return {
                 "loss_keypoint_l1": torch.tensor(0.0, device=device),
+                "loss_keypoint_oks": torch.tensor(0.0, device=device),
                 "loss_keypoint_vis": torch.tensor(0.0, device=device),
             }
         idx = self._get_src_permutation_idx(indices)
@@ -698,6 +707,7 @@ class SetCriterion(nn.Module):
         if src_keypoints.numel() == 0:
             return {
                 "loss_keypoint_l1": src_keypoints.sum(),
+                "loss_keypoint_oks": src_keypoints.sum(),
                 "loss_keypoint_vis": src_keypoints.sum(),
             }
 
@@ -712,9 +722,8 @@ class SetCriterion(nn.Module):
         # Sum over xy dim to get per-keypoint loss
         l1_per_kpt = l1_loss.sum(-1)  # [N_matched, K]
         # Apply sigma weights (higher weight for tighter-tolerance keypoints)
-        sigma_weights = _COCO_KPT_SIGMA_WEIGHTS.to(l1_per_kpt.device)
-        # Trim or pad weights to match actual num_keypoints
         K = l1_per_kpt.shape[-1]
+        sigma_weights = _COCO_KPT_SIGMA_WEIGHTS.to(l1_per_kpt.device)
         if K <= sigma_weights.shape[0]:
             sigma_weights = sigma_weights[:K]
         else:
@@ -724,6 +733,32 @@ class SetCriterion(nn.Module):
         l1_per_kpt = l1_per_kpt * vis_mask
         loss_keypoint_l1 = l1_per_kpt.sum() / max(vis_mask.sum().item(), 1)
 
+        # OKS loss (Object Keypoint Similarity, COCO eval metric).
+        # OKS_i = exp(-d_i² / (2 · area · (2σ_i)²)), per-person mean over visible kpts.
+        loss_keypoint_oks = src_keypoints.sum() * 0.0
+        if all("boxes" in t for t in targets):
+            target_boxes = torch.cat(
+                [t["boxes"][j] for t, (_, j) in zip(targets, indices)], dim=0
+            )  # [N_matched, 4] cxcywh normalized
+            if target_boxes.numel() > 0:
+                # Area in normalized image units; clamp to avoid div-by-zero.
+                areas = (target_boxes[..., 2] * target_boxes[..., 3]).clamp(min=1e-8)
+                d_sq = ((src_xy - tgt_xy) ** 2).sum(-1)  # [N_matched, K]
+                sigmas = _COCO_KPT_SIGMAS.to(d_sq.device)
+                if K <= sigmas.shape[0]:
+                    sigmas = sigmas[:K]
+                else:
+                    sigmas = F.pad(sigmas, (0, K - sigmas.shape[0]), value=0.07)
+                var = (2.0 * sigmas) ** 2  # [K]
+                e = d_sq / var.unsqueeze(0) / areas.unsqueeze(-1) / 2.0
+                oks_per_kpt = torch.exp(-e)  # in (0, 1]
+                vis_f = vis_mask.float()
+                n_vis = vis_f.sum(-1).clamp(min=1.0)  # [N_matched]
+                oks_per_person = (oks_per_kpt * vis_f).sum(-1) / n_vis  # [N_matched]
+                has_vis = (vis_mask.sum(-1) > 0).float()
+                denom = has_vis.sum().clamp(min=1.0)
+                loss_keypoint_oks = ((1.0 - oks_per_person) * has_vis).sum() / denom
+
         # BCE loss on visibility
         src_vis = src_keypoints[..., 2]  # [N_matched, K] - raw logits
         tgt_vis = (target_keypoints[..., 2] > 0).float()  # [N_matched, K]
@@ -731,6 +766,7 @@ class SetCriterion(nn.Module):
 
         return {
             "loss_keypoint_l1": loss_keypoint_l1,
+            "loss_keypoint_oks": loss_keypoint_oks,
             "loss_keypoint_vis": loss_keypoint_vis,
         }
 
@@ -1099,6 +1135,9 @@ def build_criterion_and_postprocessors(args):
     if getattr(args, "keypoint_head", False):
         weight_dict["loss_keypoint_l1"] = getattr(args, "keypoint_l1_loss_coef", 5.0)
         weight_dict["loss_keypoint_vis"] = getattr(args, "keypoint_vis_loss_coef", 1.0)
+        oks_coef = getattr(args, "keypoint_oks_loss_coef", 0.0)
+        if oks_coef > 0.0:
+            weight_dict["loss_keypoint_oks"] = oks_coef
     # TODO this is a hack
     if args.aux_loss:
         aux_weight_dict = {}

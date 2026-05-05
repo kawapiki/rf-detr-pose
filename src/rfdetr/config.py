@@ -407,6 +407,7 @@ class PoseTrainConfig(TrainConfig):
     num_keypoints: int = 17
     keypoint_l1_loss_coef: float = 5.0
     keypoint_vis_loss_coef: float = 1.0
+    keypoint_oks_loss_coef: float = 0.0
     set_cost_keypoint: float = 5.0
     cls_loss_coef: float = 2.0
     square_resize_div_64: bool = True
